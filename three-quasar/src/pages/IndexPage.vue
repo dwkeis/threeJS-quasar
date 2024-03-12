@@ -1,180 +1,229 @@
 <template>
-  <q-page class="overflow:hidden">
-    <canvas class="webgl"></canvas>
+  <q-page class="overflow:hidden!">
+    <q-btn
+      label="gold"
+      class="absolute w:80!"
+      @click="changeMedal('gold')"
+    ></q-btn>
+    <q-btn
+      label="silver"
+      class="absolute w:80! top:40"
+      @click="changeMedal('silver')"
+    ></q-btn>
+    <q-btn
+      label="bronze"
+      class="absolute w:80! top:80"
+      @click="changeMedal('bronze')"
+    ></q-btn>
+    <div class="fixed right:0 w:1000 h:full bg:#92908D overflow:auto!">
+      <div class="h:98">arrow</div>
+      <div class="float:left h:54 ml:78 f:36">ToonTara</div>
+      <canvas class="webgl overflow:hidden! h:600! w:1000!"></canvas>
+      <div class="h:1120">datasssss</div>
+    </div>
   </q-page>
 </template>
 
 <script setup>
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import * as THREE from "three";
 import { ref, onMounted } from "vue";
-import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { RGBELoader } from "three/examples/jsm/loaders/RGBELoader.js";
 
 const scene = new THREE.Scene();
+scene.background = null; //new THREE.Color("#F6F2EC");
 const canvas = ref(null);
 const renderer = ref(null);
+const mixer = ref(null);
+
+const rgbeLoader = new RGBELoader();
+
+const adjustHDRIntensity = (texture, factor) => {
+  texture.colorSpace = THREE.LinearSRGBColorSpace;
+  texture.needsUpdate = true;
+  texture.anisotropy = renderer.value.capabilities.getMaxAnisotropy();
+  texture.mapping = THREE.EquirectangularReflectionMapping;
+
+  // Adjust intensity by multiplying the texture with a factor
+  texture.image.data.forEach((val, index, array) => {
+    array[index] = val * factor;
+  });
+
+  texture.minFilter = THREE.LinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.generateMipmaps = false;
+};
 
 /**
- * Objects
+ * Models
  */
-// MeshBasicMaterial
-const material = new THREE.MeshStandardMaterial();
-material.roughness = 0.4;
-material.color = new THREE.Color("#ff0000");
+const medal = ref(null);
+const gltfLoader = new GLTFLoader();
 
-const cube = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), material);
-cube.position.x = -1.5;
-const torus2 = new THREE.Mesh(
-  new THREE.TorusGeometry(0.3, 0.2, 16, 32),
-  material
-);
-torus2.position.x = 2;
+/** for id card */ // hdr: abandoned, 0.88
+rgbeLoader.load("HDR_029_Sky_Cloudy_Env.hdr", (environmentMap) => {
+  environmentMap.mapping = THREE.EquirectangularReflectionMapping;
+  // adjustHDRIntensity(environmentMap, 0.92);
+  scene.environment = environmentMap;
+});
+gltfLoader.load("GLB_CARD_004.glb", (gltf) => {
+  // const axesHelper = new THREE.AxesHelper(5);
+  // scene.add(axesHelper);
+  if (gltf.animations.length > 0) {
+    mixer.value = new THREE.AnimationMixer(gltf.scene);
+    const action = mixer.value.clipAction(gltf.animations[0]);
+    action.play();
+  }
 
-scene.add(torus2, cube);
+  /** Lights on left side */
+  const spotLightLeft = new THREE.DirectionalLight("#F6F2EC", 3);
+  spotLightLeft.position.set(-0.5, -0.5, 0.9);
+  spotLightLeft.intensity = 1;
+  scene.add(spotLightLeft);
+  spotLightLeft.target.position.set(0, 0.8, -0.2);
+  scene.add(spotLightLeft.target);
 
+  /** Picture */
+  const textureLoader = new THREE.TextureLoader();
+  const texture = textureLoader.load("image (2).png");
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping; // rotate if upside down
+  texture.offset.set(0, 1);
+  texture.repeat.set(1, -1);
+  gltf.scene.traverse((child) => {
+    if (child.name === "photo") {
+      child.material.map = texture;
+      child.material.ior = 1.0;
+      child.material.reflectivity = 0;
+      child.material.roughness = 1;
+    }
+    if (child.name === "card001") {
+      child.material.ior = 1.0;
+      child.material.reflectivity = 0;
+      child.material.roughness = 1;
+    }
+  });
+  medal.value = gltf.scene;
+  gltf.scene.rotation.set(0, 1.5, 0);
+  scene.add(gltf.scene);
+});
 /**
  * Sizes
  */
 const sizes = {
-  width: window.innerWidth,
-  height: window.innerHeight - 55.5,
+  width: 1000,
+  height: 600,
 };
 
 /**
  * Camera
  */
 // Base camera
-const camera = new THREE.PerspectiveCamera(
-  75,
-  sizes.width / sizes.height,
-  0.1,
-  100
+const camera = ref(
+  new THREE.PerspectiveCamera(50, sizes.width / sizes.height, 0.1, 100)
 );
-camera.position.x = 0;
-camera.position.y = 1;
-camera.position.z = 3;
-scene.add(camera);
-
-// Controls
-const controls = ref();
-
-// light
-const ambientLight = new THREE.AmbientLight(0xffffff, 1);
-scene.add(ambientLight);
-const pointLight = new THREE.PointLight(0xffffff, 30);
-pointLight.position.x = 2;
-pointLight.position.y = 3;
-pointLight.position.z = 4;
-scene.add(pointLight);
+// camera.value.position.set(0, 0.05, 0.9);
+camera.value.position.set(-0.7, 0.05, 1.3);
+scene.add(camera.value);
 
 /**
  * Animate
  */
 const clock = new THREE.Clock();
 
+let lastMousePosition = { x: 0, y: 0 };
+let intro = true;
+
+function easeInOutQuad(t) {
+  return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+}
 const tick = () => {
   const elapsedTime = clock.getElapsedTime();
 
-  // Update objects
-  torus2.rotation.y = 0.1 * elapsedTime;
-  torus2.rotation.x = 3;
-  // torus2.rotation.x = -0.15 * elapsedTime;
-
-  // Update controls
-  controls.value.update();
-
-  // Render
-  renderer.value.render(scene, camera);
-
   // Call tick again on the next frame
   requestAnimationFrame(tick);
-};
-
-let startTime = Date.now();
-let duration = 1000;
-let pauseTime = 5000;
-let transitionTime = 500;
-let isShaking = true;
-
-// Function to smoothly transition the box position
-const transitionBoxPosition = (targetPosition, callback) => {
-  const start = Date.now();
-  const animateTransition = () => {
-    const now = Date.now();
-    const t = Math.min(1, (now - start) / transitionTime);
-    cube.position.x = Math.sin(t * Math.PI) * targetPosition;
-    if (t < 1) {
-      requestAnimationFrame(animateTransition);
-    } else {
-      if (callback) callback();
-    }
-  };
-  animateTransition();
-};
-
-const animate = () => {
-  const currentTime = Date.now();
-  const elapsedTime = currentTime - startTime;
-
-  if (isShaking) {
-    if (elapsedTime < duration) {
-      // Update position to make the box shake faster
-      cube.position.x = Math.sin(currentTime * 0.025) * 0.5;
-    } else {
-      // Transition back to center after shaking for 2 seconds
-      transitionBoxPosition(0, () => {
-        // Pause after the transition
-        isShaking = false;
-        startTime = currentTime;
-      });
-    }
-  } else {
-    // Pause for 2 seconds
-    if (elapsedTime >= pauseTime) {
-      // Check if the box is not at 0 position, then smoothly transition to 0
-      if (cube.position.x !== 0) {
-        transitionBoxPosition(0, () => {
-          // Box is already at 0 position, pause
-          isShaking = true;
-          startTime = currentTime;
-        });
-      } else {
-        // Box is already at 0 position, pause
-        isShaking = true;
-        startTime = currentTime;
+  if (mixer.value) {
+    if (medal.value.rotation.y >= 0 && intro) {
+      if (camera.value.position.x <= 0) {
+        camera.value.position.x += easeInOutQuad(0.08);
       }
+      if (camera.value.position.z >= 0.9) {
+        camera.value.position.z -= easeInOutQuad(0.06);
+      }
+      // Update medal rotation
+      medal.value.rotation.y -= easeInOutQuad(0.11);
+      medal.value.rotation.x -= easeInOutQuad(0.032);
+    } else {
+      intro = false;
+      // Rotate the medal based on mouse movement
+      medal.value.rotation.x = lastMousePosition.x * 0.025;
+      medal.value.rotation.y = lastMousePosition.y * 0.1;
+      let easeInOut = (t) => (t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t);
+      let xRotation = easeInOut(Math.sin(elapsedTime * 0.4)) * 0.1 - 0.2; // -0.2 to float more up
+      let yRotation = easeInOut(Math.cos(elapsedTime * 0.4)) * 0.1;
+      medal.value.rotation.x += xRotation; // disable with drawbox or reduce
+      medal.value.rotation.y += yRotation;
     }
   }
 
-  // Render the scene
-  renderer.value.render(scene, camera);
+  // Render
+  renderer.value.render(scene, camera.value);
+};
 
-  // Call animate again for the next frame
+const coinAnimation = () => {
+  const delta = clock.getDelta();
+  if (mixer.value) {
+    mixer.value.update(delta * 20);
+  }
+  renderer.value.render(scene, camera.value);
+  requestAnimationFrame(coinAnimation);
+};
 
-  requestAnimationFrame(animate);
+const changeMedal = (val) => {
+  const newTexture = new THREE.TextureLoader().load(`${val}_001.png`); // change between bronze or silver
+  newTexture.wrapS = newTexture.wrapT = THREE.RepeatWrapping; // must rotate otherwise it will fail to located
+  newTexture.offset.set(0, 1);
+  newTexture.repeat.set(1, -1);
+  medal.value.traverse((child) => {
+    if (child.name === "icon") {
+      child.material.map = newTexture;
+    }
+  });
 };
 
 onMounted(() => {
   canvas.value = document.querySelector("canvas.webgl");
-  renderer.value = new THREE.WebGLRenderer({ canvas: canvas.value });
+  renderer.value = new THREE.WebGLRenderer({
+    canvas: canvas.value,
+    antialias: true,
+    alpha: true,
+  });
+  renderer.value.setClearColor(0x000000, 0);
+  renderer.value.shadowMap.enabled = true;
   renderer.value.setSize(sizes.width, sizes.height);
   renderer.value.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   window.addEventListener("resize", () => {
     // Update sizes
-    sizes.width = window.innerWidth;
-    sizes.height = window.innerHeight;
+    sizes.width = 1000;
+    sizes.height = 600 - 57;
 
     // Update camera
-    camera.aspect = sizes.width / sizes.height;
-    camera.updateProjectionMatrix();
+    camera.value.aspect = sizes.width / sizes.height;
+    camera.value.updateProjectionMatrix();
 
     // Update renderer
     renderer.value.setSize(sizes.width, sizes.height);
     renderer.value.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   });
 
-  controls.value = new OrbitControls(camera, canvas.value);
-  controls.value.enableDamping = true;
+  let tracking = document.querySelector("div.fixed");
+  tracking.addEventListener("mousemove", (event) => {
+    setTimeout(() => {
+      lastMousePosition.y = event.clientX / sizes.width - 1.3;
+      lastMousePosition.x = event.clientY / sizes.height - 0.5;
+    }, 150);
+  });
+
   tick();
-  animate();
+  coinAnimation();
 });
 </script>
